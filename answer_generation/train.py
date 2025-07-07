@@ -34,6 +34,7 @@ from utils import convert_example
 from bleu_metrics import BLEU
 from iTrainingLogger import iSummaryWriter
 
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--pretrained_model", default='uer/t5-base-chinese-cluecorpussmall', type=str, help="backbone of encoder.")
@@ -81,7 +82,13 @@ def evaluate_model(model, data_loader):
 
 
 def train():
-    model = T5ForConditionalGeneration.from_pretrained(args.pretrained_model)
+    #model = T5ForConditionalGeneration.from_pretrained(args.pretrained_model)
+    model = T5ForConditionalGeneration.from_pretrained(
+    args.pretrained_model,
+    use_auth_token=None,
+    revision=None,
+    mirror="https://hf-mirror.com"
+)
     tokenizer = AutoTokenizer.from_pretrained(args.pretrained_model)
     tokenizer.eos_token = tokenizer.sep_token                               # 因为中文用的是Bert的Tokenizer，所以需要
     tokenizer.bos_token = tokenizer.cls_token                               # 手动指定BOS Token和EOS Token
