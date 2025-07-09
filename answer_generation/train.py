@@ -60,6 +60,10 @@ args = parser.parse_args()
 writer = iSummaryWriter(log_path=args.img_log_dir, log_name=args.img_log_name)
 
 
+os.environ["https_proxy"] = "http://127.0.0.1:7890"
+os.environ["http_proxy"] = "http://127.0.0.1:7890"
+os.environ["all_proxy"] = "socks5://127.0.0.1:7890"
+
 def evaluate_model(model, data_loader):
     """
     在测试集上评估当前模型的训练效果。
@@ -81,26 +85,35 @@ def evaluate_model(model, data_loader):
 
 
 def train():
+    # 加载预训练T5模型
     model = T5ForConditionalGeneration.from_pretrained(args.pretrained_model)
+    # 加载对应的分词器
     tokenizer = AutoTokenizer.from_pretrained(args.pretrained_model)
-    tokenizer.eos_token = tokenizer.sep_token                               # 因为中文用的是Bert的Tokenizer，所以需要
-    tokenizer.bos_token = tokenizer.cls_token                               # 手动指定BOS Token和EOS Token
+    # 因为中文用的是Bert的Tokenizer，所以需要手动指定EOS和BOS Token
+    tokenizer.eos_token = tokenizer.sep_token                               # 句子结束符
+    tokenizer.bos_token = tokenizer.cls_token                               # 句子开始符
+    # 加载本地的训练集和验证集
     dataset = load_dataset('text', data_files={'train': args.train_path,
                                                 'dev': args.dev_path})    
-    print(dataset)
+    print(dataset)  # 打印数据集信息，便于调试
+    # 构造数据预处理函数，固定部分参数
     convert_func = partial(
         convert_example, 
         tokenizer=tokenizer, 
         max_source_seq_len=args.max_source_seq_len,
         max_target_seq_len=args.max_target_seq_len,
     )
+    # 对数据集进行批量预处理（分词、编码等）
     dataset = dataset.map(convert_func, batched=True)
     
+    # 获取训练集和验证集
     train_dataset = dataset["train"]
     eval_dataset = dataset["dev"]
+    # 构建训练和验证的dataloader
     train_dataloader = DataLoader(train_dataset, shuffle=True, collate_fn=default_data_collator, batch_size=args.batch_size)
     eval_dataloader = DataLoader(eval_dataset, collate_fn=default_data_collator, batch_size=args.batch_size)
 
+    # 定义不进行权重衰减的参数（如偏置和LayerNorm）
     no_decay = ["bias", "LayerNorm.weight"]
     optimizer_grouped_parameters = [
         {
@@ -112,13 +125,16 @@ def train():
             "weight_decay": 0.0,
         },
     ]
+    # 初始化AdamW优化器
     optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=5e-5)
+    # 将模型加载到指定设备（如GPU）
     model.to(args.device)
 
-    # 根据训练轮数计算最大训练步数，以便于scheduler动态调整lr
+    # 计算最大训练步数和warmup步数，便于学习率调度
     num_update_steps_per_epoch = len(train_dataloader)
     max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
     warm_steps = int(args.warmup_ratio * max_train_steps)
+    # 构建线性学习率调度器
     lr_scheduler = get_scheduler(
         name='linear',
         optimizer=optimizer,
@@ -126,11 +142,12 @@ def train():
         num_training_steps=max_train_steps,
     )
 
-    loss_list = []
-    tic_train = time.time()
-    global_step, best_bleu4 = 0, 0
+    loss_list = []  # 记录loss变化
+    tic_train = time.time()  # 记录训练起始时间
+    global_step, best_bleu4 = 0, 0  # 全局步数和最佳bleu4分数
     for epoch in range(1, args.num_train_epochs+1):
         for batch in train_dataloader:
+            # 前向传播，计算损失
             outputs = model(
                 input_ids=batch['input_ids'].to(args.device),
                 attention_mask=batch['attention_mask'].to(args.device),
@@ -138,28 +155,32 @@ def train():
                 labels=batch['labels'].to(args.device)
             )
             loss = outputs.loss
+            # 反向传播
             loss.backward()
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-            loss_list.append(float(loss.cpu().detach()))
+            optimizer.step()  # 优化器更新参数
+            lr_scheduler.step()  # 学习率调度
+            optimizer.zero_grad()  # 梯度清零
+            loss_list.append(float(loss.cpu().detach()))  # 记录当前loss
             
             global_step += 1
+            # 每隔logging_steps步打印一次训练信息
             if global_step % args.logging_steps == 0:
                 time_diff = time.time() - tic_train
                 loss_avg = sum(loss_list) / len(loss_list)
-                writer.add_scalar('train/train_loss', loss_avg, global_step)
+                writer.add_scalar('train/train_loss', loss_avg, global_step)  # 记录到日志
                 print("global step %d, epoch: %d, loss: %.5f, speed: %.2f step/s"
                         % (global_step, epoch, loss_avg, args.logging_steps / time_diff))
                 tic_train = time.time()
 
+            # 每隔valid_steps步进行一次验证和模型保存
             if global_step % args.valid_steps == 0:
                 cur_save_dir = os.path.join(args.save_dir, "model_%d" % global_step)
                 if not os.path.exists(cur_save_dir):
                     os.makedirs(cur_save_dir)
-                model.save_pretrained(os.path.join(cur_save_dir))
-                tokenizer.save_pretrained(os.path.join(cur_save_dir))
+                model.save_pretrained(os.path.join(cur_save_dir))  # 保存模型权重
+                tokenizer.save_pretrained(os.path.join(cur_save_dir))  # 保存分词器
 
+                # 在验证集上评估模型，计算BLEU分数
                 bleu1, bleu2, bleu3, bleu4 = evaluate_model(model, eval_dataloader)
                 writer.add_scalar('eval/bleu-size-1', bleu1, global_step)
                 writer.add_scalar('eval/bleu-size-2', bleu2, global_step)
@@ -168,6 +189,7 @@ def train():
                 writer.record()
                 
                 print("Evaluation bleu4: %.5f" % (bleu4))
+                # 如果当前bleu4分数超过历史最佳，则保存为最佳模型
                 if bleu4 > best_bleu4:
                     print(
                         f"best BLEU-4 performence has been updated: {best_bleu4:.5f} --> {bleu4:.5f}"

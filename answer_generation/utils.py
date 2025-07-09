@@ -48,6 +48,7 @@ def convert_example(examples: dict, tokenizer, max_source_seq_len: int, max_targ
                             'labels': [[822, 10, ...], [125, 58...]]
                         }
     """
+    # 初始化输出字典，存放编码后的各类数据
     tokenized_output = {
             'input_ids': [],                                # encoder 输入
             'attention_mask': [],                           # encoder attention mask
@@ -55,27 +56,35 @@ def convert_example(examples: dict, tokenizer, max_source_seq_len: int, max_targ
             'labels': []                                    # decoder 标签
         }
 
+    # 遍历每一个样本
     for example in examples['text']:
         try:
+            # 解析json字符串为字典
             example = json.loads(example)
             context = example["context"]
             question = example["question"]
             answer = example["answer"]
 
+            # 构造encoder输入序列：问题+分隔符+原文
             input_seq = f'问题：{question}{tokenizer.sep_token}原文：{context}'
+            # 构造decoder输出序列：答案+eos
             output_seq = f'答案：{answer}{tokenizer.eos_token}'
             
+            # 对decoder输出序列编码，得到token id
             output_ids = tokenizer.encode(                                             # 处理 decoder 输入
                 text=output_seq,
                 truncation=True,
                 max_length=max_target_seq_len
             )
+            # decoder输入为output_ids去掉最后两个token（[CLS]和[SEP]），并补pad到最大长度
             decoder_input_ids = output_ids[:-2]                                         # bert-tokenizer 会加一个[CLS]，这个就当成<eos>了，因为是 right-shift
                                                                                         # 所以要-1，又因为 bert-tokenizer会加一个[SEP]，所以要-2
             decoder_input_ids = decoder_input_ids + [tokenizer.pad_token_id] * (max_target_seq_len - len(decoder_input_ids))
+            # labels为output_ids去掉第一个和最后一个token（[CLS]和[SEP]），并补-100到最大长度，-100用于loss忽略pad
             lables = output_ids[1:-1]                                                   # 去掉 [CLS] 和 [SEP]
             lables = lables + [-100] * (max_target_seq_len - len(lables))                # -100 用于忽略在计算 label loss 时忽略 padding token
             
+            # 对encoder输入序列编码，得到input_ids和attention_mask
             inputs = tokenizer(                                                         # 处理 encoder 输入
                 text=input_seq,
                 truncation=True,
@@ -86,11 +95,13 @@ def convert_example(examples: dict, tokenizer, max_source_seq_len: int, max_targ
             print(f'"{example}" -> {traceback.format_exc()}')
             continue
 
+        # 将编码结果添加到输出字典
         tokenized_output['input_ids'].append(inputs["input_ids"])
         tokenized_output['attention_mask'].append(inputs["attention_mask"])
         tokenized_output['decoder_input_ids'].append(decoder_input_ids)
         tokenized_output['labels'].append(lables)
     
+    # 将所有结果转为numpy数组，便于后续处理
     for k, v in tokenized_output.items():
         tokenized_output[k] = np.array(v)
 

@@ -1,9 +1,12 @@
 import torch
+import torch.nn as nn 
 from torchtext import data
 import numpy as np
 from torch.autograd import Variable
+import copy
 
-
+def get_clones(module, N):
+    return nn.ModuleList([copy.deepcopy(module) for i in range(N)])
 # def nopeak_mask(size):
 #     np_mask = np.triu(np.ones((1, size, size)), k=1).astype('uint8')
 #     np_mask = Variable(torch.from_numpy(np_mask == 0))
